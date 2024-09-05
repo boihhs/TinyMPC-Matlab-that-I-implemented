@@ -45,6 +45,7 @@ classdef TinyMPC
         xCon %used in II() and is the magnitude that X(k) has to stay in
         uMax %used in II() and is the magnitude that U(k) has to stay in
         phi  %used in II() and is the cone angle that U(k) has to stay in
+        MaxDelta %used in II() and is the magnitude the change in the magnitude of U(k) has to stay in
         
 
         tol %tolerance
@@ -54,7 +55,7 @@ classdef TinyMPC
     
     methods
         %initizie everything
-        function obj = TinyMPC(X, U, A, B, c, Q, R, q, r, xCon, uMax, tol, timesteps, phi, penalty)
+        function obj = TinyMPC(X, U, A, B, c, Q, R, q, r, xCon, uMax, tol, timesteps, phi, penalty, MaxDelta)
             obj.X = X;
             obj.U = U;
             obj.A = A;
@@ -75,6 +76,7 @@ classdef TinyMPC
             obj.Mu = obj.U;
             obj.phi = deg2rad(phi);
             obj.penalty = penalty;
+            obj.MaxDelta = MaxDelta;
            
         end
 
@@ -84,9 +86,9 @@ classdef TinyMPC
         %to get K(inf), P(inf) and update C1, C2, C3, C4
         function obj = LQR(obj, aug)
             if aug
-                obj.p = (obj.q + obj.Lamda(size(obj.Lamda, 1)) - obj.penalty*obj.Z(size(obj.Z, 1))).';
+                obj.p = (obj.q + obj.Lamda(size(obj.Lamda, 1), :) - obj.penalty*obj.Z(size(obj.Z, 1), :)).';
                 for i = size(obj.U, 1):-1:1
-                    obj.qhat = obj.q + obj.Lamda(size(obj.Lamda, 1)) - obj.penalty*obj.Z(size(obj.Z, 1));
+                    obj.qhat = obj.q + obj.Lamda(i, :) - obj.penalty*obj.Z(i, :);
                     obj.rhat = obj.r + obj.Mu(i, :) - obj.penalty*obj.W(i, :);
 
                     obj.d(i, :) = obj.C1*(obj.B.'*obj.p + obj.rhat.' + obj.C3);
@@ -131,51 +133,40 @@ classdef TinyMPC
             obj.Z = obj.X;
             obj.W = obj.U;
             
-            %update X slack to stay below max magnitude
+            %update U slack
             for i = 1:size(obj.Z, 1)
-                if norm(obj.Z(i, :), 2) <= -obj.xCon
-                    obj.Z(i, :) = zeros(size(obj.Z), 2);
-                elseif norm(obj.Z(i, :), 2) <= obj.xCon
+
+                %|x|cos(max angle) <= zvalue
+                if norm(obj.Z(i, :), 2)*cos(obj.xCon) <= -obj.Z(i, 3)
+                    obj.Z(i, :) = zeros(1, 6);
+                elseif norm(obj.Z(i, :), 2)*cos(obj.xCon) <= obj.Z(i, 3)
                     obj.Z(i, :) = obj.Z(i, :);
                 else
-                    obj.Z(i, :) = .5*(1+ obj.xCon/norm(obj.Z(i, :), 2)) * obj.Z(i, :);
+                    obj.Z(i, :) = .5*(1+ obj.Z(i, 3)/(norm(obj.Z(i, :), 2)*cos(obj.xCon)))* obj.Z(i, :);
                 end
+
             end
 
             %update U slack
-            for i = 1:size(obj.W, 1)
-                obj.W(i, 4) = norm(obj.W(i, 1:3), 2);
-                
-                %update U slack to stay below max magnitude
-                if obj.W(i, 4) <= -obj.uMax
-                    obj.W(i, 1:3) = zeros(3,1);
-                elseif obj.W(i, 4) <= obj.uMax
-                    
-                    obj.W(i, :) = obj.W(i, :);
-                else
-                    obj.W(i, 1:3) = .5*(1+ obj.uMax/obj.W(i, 4)) * obj.W(i, 1:3);
-                    
-                end
-                
-                %update U slack to in cone angle
-                if obj.W(i, 4)*cos(obj.phi) <= -obj.W(i, 3)
-                    obj.W(i, 1:3) = zeros(3,1);
+            for i = 1:(size(obj.W, 1))-1
 
-                elseif obj.W(i, 4)*cos(obj.phi) <= obj.W(i, 3)
-                    
+                %||T|| < gamma[k]
+                if norm(obj.W(i, 1:3), 2) <= -obj.W(i, 4)
+                    obj.W(i, :) = zeros(1, 4);
+                elseif norm(obj.W(i, 1:3), 2) <= obj.W(i, 4)
                     obj.W(i, :) = obj.W(i, :);
                 else
-                    obj.W(i, 1:3) = (obj.W(i, 3)/(obj.W(i, 4)*cos(obj.phi))) * obj.W(i, 1:3);
-                    
+                    obj.W(i, :) = .5*(1 + obj.W(i, 4)/norm(obj.W(i, 1:3), 2))*[obj.W(i, 1:3), norm(obj.W(i, 1:3), 2)];
                 end
-                
-                %update U slack to have the slack in the slack to be
-                %magnitude of thrust
-                if obj.W(i, 4) <= norm(obj.W(i, 1:3), 2)
-                    obj.W(i, 4) = obj.W(i, 4);
-                else
-                    obj.W(i, 4) = norm(obj.W(i, 1:3), 2);
-                end
+
+                %Tdotmin * dt <= gamma[k+1] - gamma[k] <= Tdotmax*dt
+                obj.W(i, 4) = max(obj.W(i + 1, 4) - obj.MaxDelta, min(obj.W(i + 1, 4) + obj.MaxDelta, obj.W(i, 4)));
+
+                %0 <= Tmin <= gamma <= Tmax
+                obj.W(i, 4) = max(0, min(obj.uMax, obj.W(i, 4)));
+
+                %gamma*cos(theta) <= zvalue
+                obj.W(i, 4) = max(0, min(obj.W(i, 3)/cos(obj.phi), obj.W(i, 4)));
 
             end
         end
@@ -209,11 +200,14 @@ classdef TinyMPC
 
             %e = 0;
             
-            for e = 1:200 
+            for e = 1:1000 
                 %e = e + 1;
                 obj = obj.LQR(true);
                 obj = obj.II();
                 obj = obj.dualUpdate();
+                
+                
+               
                 %delta = obj.U - obj.W
                
             end
