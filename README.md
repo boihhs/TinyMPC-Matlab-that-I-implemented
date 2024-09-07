@@ -1,0 +1,2 @@
+I realized that I didn't code it exactlly as it actually is supposed to. However, my way might be more memory efficent but doens't follow constriants as well as all the constraints are put into one slack varible instead of a slack varible per constraint
+Also the angle doesn't work that well, but setting cos(theta) = 1 worked the best for me for limiting the angle of gimble while still working (To this day this confusies me, but what else can I do)
